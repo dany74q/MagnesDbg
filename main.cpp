@@ -3,8 +3,9 @@
 #include "stdio.h"
 #include "conio.h"
 #include "DbgHelp.h"
+#include "magnesfuncs.h"
 
-#define BUFFER 1024
+#define DETOUR "C:\\HookingDLL\\Detour.dll"
 
 #ifdef _M_IX86
 	#define OS "X86"
@@ -16,11 +17,10 @@
 
 #pragma comment(lib, "Dbghelp.lib")
 
-BOOL EnableDebugPrivilege(BOOL bEnable); /*allows my debuger to have debugging privileges*/
+BOOL Detour(DWORD dwPid,PCHAR szTargetFunction,PCHAR szReplacementFunction,PCHAR szDll);
 BOOL HookByInjection(PCHAR szHookedDll,DWORD dwProcId);
 BOOL StackWalker(DWORD dwPid);
 
-DWORD PidByName(WCHAR * name);
 DWORD ThreadIdSnapper(DWORD dwPid);
 
 int main(int argc, char ** argv)
@@ -28,20 +28,20 @@ int main(int argc, char ** argv)
 	WCHAR szProcName;
 
 	SymInitialize( GetCurrentProcess(), NULL, TRUE ); //Called in this process, as well is in the target
-
+	Detour(5200,"CreateFileA","MyCreateFileA","C:\\HookingDLL\\Shield.dll");
 	printf("%s\n",OS);
 	printf("Can Debug:%d\n",EnableDebugPrivilege(TRUE));
 
 	//HookByInjection("mdbg.dll",8132);
 	
-	MultiByteToWideChar(CP_ACP, //converting argv[1] to a wchar, so i can get its pid from the name
+	/*MultiByteToWideChar(CP_ACP, //converting argv[1] to a wchar, so i can get its pid from the name
 		MB_COMPOSITE,
 		argv[1],
 		-1,
 		&szProcName,
-		MAX_PATH);
+		MAX_PATH);*/
 
-	StackWalker(PidByName(&szProcName));
+	//StackWalker(PidByName(&szProcName));
 
 	getch();
 	return 0;
@@ -50,23 +50,6 @@ int main(int argc, char ** argv)
 void GUI()
 {
 	
-}
-DWORD PidByName(WCHAR * name)
-{
-	DWORD dwPid;
-	BOOL success;
-	PROCESSENTRY32 prProcess;
-	HANDLE hProcessSnap = INVALID_HANDLE_VALUE;
-	hProcessSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0); //snapping all processes
-	prProcess.dwSize = sizeof(PROCESSENTRY32);
-	success = Process32First(hProcessSnap,&prProcess);
-	do{
-		if(wcscmp(name,prProcess.szExeFile) == 0)
-		{
-			return prProcess.th32ProcessID;
-		}
-	}while(Process32Next( hProcessSnap, &prProcess ));
-	return -1;
 }
 
 DWORD ThreadIdSnapper(DWORD dwPid)
@@ -104,9 +87,9 @@ BOOL StackWalker(DWORD dwPid)
 
 	STACKFRAME64 stkCallStack;
 	CONTEXT coThreadContext;
-	char Input [BUFFER];
+	char Input [MAG_BUFFER];
 
-	UINT MaxStackFrames = 50;
+	UINT MaxStackFrames = MAX_FRAMES;
 	DWORD MachineType;
 	UINT StackFrame = 0;
 
@@ -239,27 +222,49 @@ BOOL HookByInjection(PCHAR szHookedDll,DWORD dwProcId)			//The hook will be set 
 	}
 	return TRUE;
 }
+BOOL Detour(DWORD dwPid,PCHAR szTargetFunction,PCHAR szReplacementFunction,PCHAR szDll)
+{
+	HANDLE hNamedPipe = INVALID_HANDLE_VALUE;
+	CHAR szRawArgs[MAG_BUFFER];
+	DWORD dwBytesWritten;
+	if(!HookByInjection(szDll,dwPid))
+	{
+		return FALSE;
+	}
+	if(!HookByInjection(DETOUR,dwPid))
+	{
+		return FALSE;
+	}
+	Sleep(100);
+	printf("Opening Pipe\n");
+	hNamedPipe = CreateFileA("\\\\.\\pipe\\dllargs",
+		GENERIC_READ | GENERIC_WRITE,
+		0,
+		NULL,
+		OPEN_EXISTING,
+		FILE_ATTRIBUTE_NORMAL,
+		NULL);
+	ZeroMemory(szRawArgs,MAG_BUFFER);
+	memcpy(szRawArgs,szTargetFunction,strlen(szTargetFunction));
+	memcpy(&szRawArgs[strlen(szTargetFunction)]," ",1);
+	memcpy(&szRawArgs[strlen(szTargetFunction)+1],szReplacementFunction,strlen(szReplacementFunction));
+	memcpy(&szRawArgs[strlen(szTargetFunction)+1+strlen(szReplacementFunction)]," ",1);
+	memcpy(&szRawArgs[strlen(szTargetFunction)+1+strlen(szReplacementFunction)+1],szDll,strlen(szDll));
+    printf("%s\n",szRawArgs);
+	if(!WriteFile(hNamedPipe,szRawArgs,MAG_BUFFER,&dwBytesWritten,NULL))
+	{
+		printf("Couldn't pass arguments\n");
+		return FALSE;
+	}
+	return TRUE;
+}
+
+void SimpleGui()
+{
+	//WriteConsole(
+}
 
 BOOL GarbageCollector()
 {
 	return TRUE;
-}
-
-BOOL EnableDebugPrivilege(BOOL bEnable) 
-{
-	BOOL bOk = FALSE; 
-	HANDLE hToken;
-	if(::OpenProcessToken(::GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES, &hToken)) 
-	{	
-		LUID uID;
-		::LookupPrivilegeValue(NULL, SE_DEBUG_NAME, &uID);
-		TOKEN_PRIVILEGES tp;
-		tp.PrivilegeCount = 1;
-		tp.Privileges[0].Luid = uID;
-		tp.Privileges[0].Attributes = bEnable ? SE_PRIVILEGE_ENABLED : 0;
-		::AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(tp), NULL, NULL);
-		bOk = (::GetLastError() == ERROR_SUCCESS);
-		::CloseHandle(hToken);
-	}
-	return bOk;
 }
